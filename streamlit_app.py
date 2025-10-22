@@ -522,7 +522,7 @@ else:
             """, unsafe_allow_html=True)
 
             # RIGA DI CHIP (solo giorni con scadenze)
-            chip_cols = st.columns(2) if st.query_params() else [st.container()]  # fallback: una riga
+            chip_cols = st.columns(2) if st.experimental_get_query_params() else [st.container()]  # fallback: una riga
             # Per semplicità, facciamo tutti i chip nel container principale:
             chip_area = st.container()
             with chip_area:
