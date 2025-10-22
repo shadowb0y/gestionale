@@ -530,17 +530,25 @@ else:
                     info = day_info[d]
                     stt = info["status"]
                     icon = "🟢" if stt == "verde" else "🟡" if stt == "giallo" else "🔴"
-                    # traduzione giorno settimana
+
+                    # Traduzione giorno settimana
                     giorni = {
                         "Mon": "Lunedì", "Tue": "Martedì", "Wed": "Mercoledì",
                         "Thu": "Giovedì", "Fri": "Venerdì", "Sat": "Sabato", "Sun": "Domenica"
                     }
                     giorno = giorni.get(d.strftime("%a"), d.strftime("%a"))
-                    label = f"{icon} {giorno} {d.strftime('%d/%m')}  ({info['count']})"
+
+                    # Gestione singolare/plurale
+                    n = info["count"]
+                    ordini_txt = "ordine" if n == 1 else "ordini"
+
+                    # Label finale leggibile
+                    label = f"{icon} {giorno} {d.strftime('%d/%m')} — {n} {ordini_txt}"
 
                     if st.button(label, key=f"chip_{d.isoformat()}", use_container_width=True):
                         st.session_state.selected_day = d
                         st.rerun()
+
 
 
             # Lista ordini del giorno selezionato (se la selezione non è nella pagina corrente, mostro cmq)
