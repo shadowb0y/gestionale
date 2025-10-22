@@ -449,145 +449,125 @@ if page == "Aggiungi ordine":
 else:
     # ======== DASHBOARD ========
     st.title("Gestionale Ordini")
-    # ------------------- CALENDARIO: Vista mensile con navigazione -------------------
-    st.subheader("📅 Calendario (mese)")
+    # ------------------- CALENDARIO COMPATTO: solo giorni con scadenze -------------------
+    st.subheader("📅 Scadenze (solo giorni con ordini)")
 
     if df_all.empty:
-        st.info("Nessun ordine presente. Vai su 'Aggiungi ordine' per crearne uno.")
+        st.info("Nessun ordine presente. Vai su 'Aggiungi ordine'.")
     else:
-        # === Prepara dataset scadenze (fallback a fine prevista)
         today = datetime.now(TZ)
+
+        # Prepara scadenze (fallback alla fine prevista)
         cal = df_all.copy()
         cal["scadenza_data"] = pd.to_datetime(cal["scadenza_iso"], errors="coerce")
         fallback = pd.to_datetime(cal["fine_iso"], errors="coerce")
         cal.loc[cal["scadenza_data"].isna(), "scadenza_data"] = fallback
         cal = cal.dropna(subset=["scadenza_data"]).copy()
+
+        # Solo giorno (date) e status colore
         cal["scadenza_day"] = cal["scadenza_data"].dt.date
-
-        # status colore per singolo ordine
         cal["status"] = cal["scadenza_data"].apply(lambda d: due_status_color(d, today))
-        severity_rank = {"rosso": 3, "giallo": 2, "verde": 1}
 
-        # mappa giorno -> info aggregata
-        from collections import defaultdict
-        day_info = defaultdict(lambda: {"status": None, "count": 0, "df": pd.DataFrame()})
-        for d, g in cal.groupby("scadenza_day"):
-            stt = max(g["status"], key=lambda s: severity_rank.get(s, 0))
-            day_info[d] = {"status": stt, "count": len(g), "df": g.sort_values("scadenza_data")}
+        # FILTRO: di default mostra solo da oggi in avanti (togglabile)
+        show_past = st.toggle("Mostra anche scadenze passate", value=False)
+        if not show_past:
+            cal = cal[cal["scadenza_day"] >= today.date()]
 
-        # === Stato di navigazione mese/giorno
-        if "month_anchor" not in st.session_state:
-            # primo giorno del mese corrente
-            st.session_state.month_anchor = date(today.year, today.month, 1)
-        if "selected_day" not in st.session_state:
-            st.session_state.selected_day = today.date()
+        if cal.empty:
+            st.info("Non ci sono scadenze nel periodo selezionato.")
+        else:
+            # Aggrega per giorno: status più severo + conteggio + df ordini
+            rank = {"rosso": 3, "giallo": 2, "verde": 1}
+            day_info = {}
+            for d, g in cal.groupby("scadenza_day"):
+                stt = max(g["status"], key=lambda s: rank.get(s, 0))
+                day_info[d] = {"status": stt, "count": len(g), "df": g.sort_values("scadenza_data")}
 
-        # === Barra di navigazione mese
-        ma = st.session_state.month_anchor
-        prev_month = (ma.replace(day=1) - timedelta(days=1)).replace(day=1)
-        next_month = (ma.replace(day=28) + timedelta(days=4)).replace(day=1)
+            # Ordina per data crescente
+            days_list = sorted(day_info.keys())
 
-        c1, c2, c3 = st.columns([1, 3, 1])
-        with c1:
-            if st.button("◀︎ Mese prec.", use_container_width=True, key="cal_prev"):
-                st.session_state.month_anchor = prev_month
-                # se il giorno selezionato esce dal mese, spostalo al primo del mese
-                st.session_state.selected_day = st.session_state.month_anchor
-                st.rerun()
-        with c2:
-            st.markdown(
-                f"<div style='text-align:center;font-size:1.2rem;font-weight:700;'>{ma.strftime('%B %Y').title()}</div>",
-                unsafe_allow_html=True
-            )
-        with c3:
-            if st.button("Mese succ. ▶︎", use_container_width=True, key="cal_next"):
-                st.session_state.month_anchor = next_month
-                st.session_state.selected_day = st.session_state.month_anchor
-                st.rerun()
+            # Paginazione (perfetta per mobile)
+            PAGE_SIZE = 12  # quante “date” per pagina
+            if "day_page" not in st.session_state: st.session_state.day_page = 0
+            max_page = max((len(days_list) - 1) // PAGE_SIZE, 0)
 
-        # === Calcolo griglia (6 settimane, da lunedì)
-        first_weekday = (ma.weekday() + 7 - 0) % 7  # 0=Mon
-        grid_start = ma - timedelta(days=first_weekday)
-        days_grid = [grid_start + timedelta(days=i) for i in range(42)]  # 6 settimane
+            cprev, cinfo, cnext = st.columns([1, 3, 1])
+            with cprev:
+                if st.button("◀︎", use_container_width=True, disabled=(st.session_state.day_page == 0)):
+                    st.session_state.day_page -= 1
+                    st.rerun()
+            with cinfo:
+                st.markdown(
+                    f"<div style='text-align:center;opacity:.8'>Pagina {st.session_state.day_page+1} / {max_page+1}</div>",
+                    unsafe_allow_html=True
+                )
+            with cnext:
+                if st.button("▶︎", use_container_width=True, disabled=(st.session_state.day_page == max_page)):
+                    st.session_state.day_page += 1
+                    st.rerun()
 
-        # === Stili (minimal, dark-friendly)
-        st.markdown("""
-        <style>
-        .wk {opacity:.75; font-size:.8rem; text-align:center; margin:6px 0;}
-        .cell{border:1px solid rgba(255,255,255,.12); border-radius:10px; padding:6px 6px 10px; text-align:center;}
-        .cell.dim{opacity:.45;}
-        .cell.sel{box-shadow:0 0 0 2px rgba(120,120,255,.5) inset;}
-        .daynum{font-weight:700; font-variant-numeric:tabular-nums;}
-        .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin:6px 0 2px}
-        .gray{background:#6f6f6f;}
-        .green{background:#2ca02c;}
-        .yellow{background:#ffbf00;}
-        .red{background:#d62728;}
-        .badge{display:inline-block;padding:0 6px;border-radius:999px;font-size:.72rem;
-                background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);margin-top:4px;}
-        .btnwrap button{width:100%}
-        </style>
-        """, unsafe_allow_html=True)
+            start = st.session_state.day_page * PAGE_SIZE
+            end = start + PAGE_SIZE
+            page_days = days_list[start:end]
 
-        wk_labels = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
-        cols_head = st.columns(7)
-        for i in range(7):
-            cols_head[i].markdown(f"<div class='wk'>{wk_labels[i]}</div>", unsafe_allow_html=True)
+            # Stili “chip”
+            st.markdown("""
+            <style>
+            .chip{border:1px solid rgba(255,255,255,.12); border-radius:999px; padding:8px 12px; margin:6px 6px 0 0;
+                    display:inline-flex; align-items:center; gap:8px;}
+            .dot{width:10px;height:10px;border-radius:50%;}
+            .green{background:#2ca02c;} .yellow{background:#ffbf00;} .red{background:#d62728;}
+            .badge{font-size:.8rem; opacity:.85;}
+            </style>
+            """, unsafe_allow_html=True)
 
-        # === Griglia 6x7
-        for row in range(6):
-            cols = st.columns(7)
-            for col in range(7):
-                d = days_grid[row*7 + col]
-                in_month = (d.month == ma.month)
-                info = day_info.get(d, None)
-                stt = info["status"] if info else None
-                count = info["count"] if info else 0
-                dot_class = "green" if stt == "verde" else "yellow" if stt == "giallo" else "red" if stt == "rosso" else "gray"
-                sel = (d == st.session_state.selected_day)
-
-                with cols[col]:
-                    classes = "cell"
-                    if not in_month: classes += " dim"
-                    if sel: classes += " sel"
-                    st.markdown(f"<div class='{classes}'>", unsafe_allow_html=True)
-
-                    # pallino
-                    st.markdown(f"<span class='dot {dot_class}'></span>", unsafe_allow_html=True)
-
-                    # bottone giorno
-                    if st.button(f"{d.day:02d}", key=f"daybtn_{d.isoformat()}"):
+            # RIGA DI CHIP (solo giorni con scadenze)
+            chip_cols = st.columns(2) if st.experimental_get_query_params() else [st.container()]  # fallback: una riga
+            # Per semplicità, facciamo tutti i chip nel container principale:
+            chip_area = st.container()
+            with chip_area:
+                for d in page_days:
+                    info = day_info[d]
+                    stt = info["status"]
+                    dot_class = "green" if stt=="verde" else "yellow" if stt=="giallo" else "red"
+                    label = f"{d.strftime('%a %d/%m')}"
+                    # chip visual
+                    st.markdown(
+                        f"<span class='chip'><span class='dot {dot_class}'></span>"
+                        f"<span>{label}</span><span class='badge'>({info['count']})</span></span>",
+                        unsafe_allow_html=True
+                    )
+                    # bottone invisibile “sovrapposto” (cliccabile) con chiave distinta
+                    if st.button(label, key=f"chipbtn_{d.isoformat()}"):
                         st.session_state.selected_day = d
                         st.rerun()
 
-                    # badge conteggio (solo se ci sono ordini)
-                    if count > 0:
-                        st.markdown(f"<span class='badge'>{count} ord.</span>", unsafe_allow_html=True)
+            # Lista ordini del giorno selezionato (se la selezione non è nella pagina corrente, mostro cmq)
+            if "selected_day" not in st.session_state:
+                st.session_state.selected_day = page_days[0]
 
-                    st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown(f"### 📌 Ordini del {st.session_state.selected_day.strftime('%d/%m/%Y')}")
+            todays = day_info.get(st.session_state.selected_day, {}).get("df", pd.DataFrame())
 
-        # === Lista ordini del giorno selezionato
-        st.markdown(f"### 📌 Ordini del {st.session_state.selected_day.strftime('%d/%m/%Y')}")
-        todays = day_info.get(st.session_state.selected_day, {}).get("df", pd.DataFrame())
-        if todays is None or len(todays) == 0:
-            st.info("Nessun ordine con scadenza in questa data.")
-        else:
-            show = todays[["id", "titolo", "cliente", "scadenza_iso", "fine_iso", "status"]].copy()
-            show.rename(columns={"scadenza_iso": "scadenza", "fine_iso": "fine_prevista"}, inplace=True)
-            st.dataframe(show, use_container_width=True, hide_index=True)
+            if todays is None or todays.empty:
+                st.info("Nessun ordine in questa data.")
+            else:
+                show = todays[["id", "titolo", "cliente", "scadenza_iso", "fine_iso", "status"]].copy()
+                show.rename(columns={"scadenza_iso": "scadenza", "fine_iso": "fine_prevista"}, inplace=True)
+                st.dataframe(show, use_container_width=True, hide_index=True)
 
-            cols_open = st.columns(min(4, len(todays)))
-            for idx, (_, rowx) in enumerate(todays.iterrows()):
-                c = cols_open[idx % len(cols_open)]
-                with c:
-                    icon = "🟢" if rowx["status"]=="verde" else "🟡" if rowx["status"]=="giallo" else "🔴"
-                    oid = int(rowx["id"])
-                    if st.button(f"{icon} Apri #{oid}", key=f"open_{oid}", use_container_width=True):
-                        st.session_state.selected_id = oid           # dettaglio al centro
-                        st.session_state["order_selector"] = str(oid) # sync radio sidebar
-                        # opzionale: deep link
-                        st.experimental_set_query_params(selected_id=oid)
-                        st.rerun()
+                # bottoni rapidi: apri dettaglio e sincronizza sidebar
+                cols_open = st.columns(min(4, len(todays)))
+                for idx, (_, rowx) in enumerate(todays.iterrows()):
+                    c = cols_open[idx % len(cols_open)]
+                    with c:
+                        icon = "🟢" if rowx["status"]=="verde" else "🟡" if rowx["status"]=="giallo" else "🔴"
+                        oid = int(rowx["id"])
+                        if st.button(f"{icon} Apri #{oid}", key=f"open_{oid}", use_container_width=True):
+                            st.session_state.selected_id = oid
+                            st.session_state["order_selector"] = str(oid)  # sync radio
+                            st.experimental_set_query_params(selected_id=oid)  # opzionale deep link
+                            st.rerun()
 
     st.markdown("---")
     # -------------------------------------------------------------------------------
