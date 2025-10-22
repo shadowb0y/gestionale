@@ -503,10 +503,10 @@ else:
     # Selettore ordine nella sidebar (solo Dashboard)
     st.sidebar.markdown("### Seleziona ordine")
     options = ["new"] + [str(int(x)) for x in df_all["id"].dropna()] if not df_all.empty else ["new"]
-    labels = ["➕ Aggiungi nuovo…"] + [
-        f"#{int(row.id)} — {row.titolo} | {row.ore_stimate}h • fine: {human(row.fine_iso)}"
-        for _, row in df_all.iterrows()
-    ]
+    # labels = ["➕ Aggiungi nuovo…"] + [
+    #     f"#{int(row.id)} — {row.titolo} | {row.ore_stimate}h • fine: {human(row.fine_iso)}"
+    #     for _, row in df_all.iterrows()
+    # ]
     selected_str = st.sidebar.radio("Ordini", options=options, format_func=lambda v: labels[options.index(v)])
 
     if selected_str == "new":
