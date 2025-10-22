@@ -530,7 +530,14 @@ else:
                     info = day_info[d]
                     stt = info["status"]
                     icon = "🟢" if stt == "verde" else "🟡" if stt == "giallo" else "🔴"
-                    label = f"{icon} {d.strftime('%a %d/%m')}  ({info['count']})"
+                    # traduzione giorno settimana
+                    giorni = {
+                        "Mon": "Lunedì", "Tue": "Martedì", "Wed": "Mercoledì",
+                        "Thu": "Giovedì", "Fri": "Venerdì", "Sat": "Sabato", "Sun": "Domenica"
+                    }
+                    giorno = giorni.get(d.strftime("%a"), d.strftime("%a"))
+                    label = f"{icon} {giorno} {d.strftime('%d/%m')}  ({info['count']})"
+
                     if st.button(label, key=f"chip_{d.isoformat()}", use_container_width=True):
                         st.session_state.selected_day = d
                         st.rerun()
