@@ -555,9 +555,13 @@ else:
                 with c:
                     icon = "🟢" if rowx["status"]=="verde" else "🟡" if rowx["status"]=="giallo" else "🔴"
                     btxt = f"{icon} #{int(rowx['id'])} — {rowx['titolo']}"
-                    if st.button(btxt, key=f"pick_{int(rowx['id'])}", use_container_width=True):
-                        st.session_state.selected_id = int(rowx["id"])
+                    oid = int(rowx["id"])
+                    if st.button(btxt, key=f"pick_{oid}", use_container_width=True):
+                        # sincronizza TUTTO: stato interno + radio sidebar
+                        st.session_state.selected_id = oid
+                        st.session_state["order_selector"] = str(oid)
                         st.rerun()
+
 
     st.markdown("---")
 
@@ -565,18 +569,36 @@ else:
     # Selettore ordine nella sidebar (solo Dashboard)
     st.sidebar.markdown("### Seleziona ordine")
 
-    # crea le opzioni solo con gli ID esistenti
     if df_all.empty:
         st.sidebar.info("Nessun ordine presente.")
         st.session_state.selected_id = None
     else:
-        options = [str(int(x)) for x in df_all["id"].dropna()]
+        options = [str(int(x)) for x in df_all["id"].dropna().astype(int)]
         labels = [
             f"#{int(row.id)} — {row.titolo} | {row.ore_stimate}h • fine: {human(row.fine_iso)}"
             for _, row in df_all.iterrows()
         ]
-        selected_str = st.sidebar.radio("Ordini", options=options,
-                                        format_func=lambda v: labels[options.index(v)])
+
+        # inizializza selected_id se mancante
+        if st.session_state.get("selected_id") is None and options:
+            st.session_state.selected_id = int(options[0])
+
+        # se selected_id non è tra le opzioni (ordine cancellato), ripiega sul primo
+        if str(st.session_state.selected_id) not in options and options:
+            st.session_state.selected_id = int(options[0])
+
+        # forza l'indice del radio a seguire selected_id
+        default_index = options.index(str(st.session_state.selected_id)) if options else 0
+
+        selected_str = st.sidebar.radio(
+            "Ordini",
+            options=options,
+            index=default_index,
+            format_func=lambda v: labels[options.index(v)],
+            key="order_selector"  # <- chiave importante per essere sovrascritta dai bottoni
+        )
+
+        # quando l'utente cambia il radio, aggiorniamo selected_id
         st.session_state.selected_id = int(selected_str)
 
     st.subheader("🔎 Dettaglio ordine")
