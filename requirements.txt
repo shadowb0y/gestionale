@@ -4,3 +4,4 @@ gspread
 google-auth
 gspread-dataframe
 python-dateutil
+plotly
