@@ -5,6 +5,36 @@ from dateutil import tz
 import os
 import io
 
+import gspread
+from google.oauth2.service_account import Credentials
+from gspread_dataframe import get_as_dataframe, set_with_dataframe
+
+
+SHEET_NAME = "streamlit-gestionale"   # nome del file Google Sheets
+WORKSHEET_TITLE = None                # None = primo foglio; oppure "Foglio1"
+
+def _open_ws():
+    # credenziali da st.secrets (meglio) oppure da env
+    if "gcp_service_account" in st.secrets:
+        info = dict(st.secrets["gcp_service_account"])
+    else:
+        # fallback opzionale: variabile d'ambiente con JSON
+        import json, os
+        info = json.loads(os.environ["GCP_SERVICE_ACCOUNT_JSON"])
+
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive.readonly",
+    ]
+    creds = Credentials.from_service_account_info(info, scopes=scopes)
+    gc = gspread.authorize(creds)
+    sh = gc.open(SHEET_NAME)
+    ws = sh.get_worksheet(0) if WORKSHEET_TITLE is None else sh.worksheet(WORKSHEET_TITLE)
+    return ws
+
+
+
+
 # =============== CONFIG ===============
 st.set_page_config(page_title="Gestionale Ordini", layout="wide")
 
@@ -40,38 +70,56 @@ def ensure_storage():
         df.to_csv(ORDERS_CSV, index=False)
 
 def load_orders() -> pd.DataFrame:
-    ensure_storage()
-    df = pd.read_csv(ORDERS_CSV)
-    # parsing comodo
+    ws = _open_ws()
+    # Legge tutto il foglio come DataFrame, usando la prima riga come header
+    df = get_as_dataframe(ws, evaluate_formulas=True, header=0)
+    # Pulisce righe completamente vuote
+    df = df.dropna(how="all")
+    if df.empty:
+        # garantisce le colonne attese se il foglio è vuoto
+        df = pd.DataFrame(columns=[
+            "id","titolo","cliente","materiale","metri_lineari",
+            "coeff","ore_stimate","inizio_iso","fine_iso","note"
+        ])
+        return df
+
+    # Tipi
+    for c in ["id"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
+    for c in ["metri_lineari","coeff","ore_stimate"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Datetime
     for col in ["inizio_iso","fine_iso"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
+
     return df
 
+
 def save_orders(df: pd.DataFrame):
+    # Copia e normalizza le date in stringa ISO compatibile con Sheets
     df2 = df.copy()
 
     for col in ["inizio_iso", "fine_iso"]:
         if col in df2.columns:
-            # 1) forza il tipo datetime (accetta mixed/strings/NaT)
             s = pd.to_datetime(df2[col], errors="coerce")
+            df2[col] = s.dt.strftime("%Y-%m-%d %H:%M:%S")
 
-            # 2) se è timezone-aware, converti a Europe/Rome e rimuovi tz
-            try:
-                if s.dt.tz is not None:
-                    s = s.dt.tz_convert("Europe/Rome").dt.tz_localize(None)
-            except AttributeError:
-                # s.dt non disponibile se tutta la colonna è NaT → ok
-                pass
+    # Ordina le colonne come nello sheet
+    cols = ["id","titolo","cliente","materiale","metri_lineari",
+            "coeff","ore_stimate","inizio_iso","fine_iso","note"]
+    for c in cols:
+        if c not in df2.columns:
+            df2[c] = pd.NA
+    df2 = df2[cols]
 
-            df2[col] = s
-
-    # 3) salva in formato stringa uniforme
-    for col in ["inizio_iso", "fine_iso"]:
-        if col in df2.columns:
-            df2[col] = df2[col].dt.strftime("%Y-%m-%d %H:%M:%S")
-
-    df2.to_csv(ORDERS_CSV, index=False)
+    ws = _open_ws()
+    # Sovrascrive dal cell A1 con header
+    ws.clear()
+    set_with_dataframe(ws, df2, include_index=False, include_column_header=True, resize=True)
 
 
 def next_work_start(dt: datetime) -> datetime:
