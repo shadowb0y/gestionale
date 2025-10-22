@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date, time
 from dateutil import tz
 import os
 import io
@@ -8,9 +8,12 @@ import io
 # =============== CONFIG ===============
 st.set_page_config(page_title="Gestionale Ordini", layout="wide")
 
-DATA_DIR = "data"
+# in cima, vicino a DATA_DIR
+DATA_DIR = os.getenv("DATA_DIR", "data")   # <— invece del valore fisso
 ORDERS_CSV = os.path.join(DATA_DIR, "orders.csv")
 FILES_DIR = os.path.join(DATA_DIR, "files")
+
+
 TZ = tz.gettz("Europe/Rome")
 
 # Coefficienti ore per materiale (modifica liberamente)
@@ -47,11 +50,29 @@ def load_orders() -> pd.DataFrame:
 
 def save_orders(df: pd.DataFrame):
     df2 = df.copy()
-    for col in ["inizio_iso","fine_iso"]:
+
+    for col in ["inizio_iso", "fine_iso"]:
         if col in df2.columns:
-            # salva in ISO locale
+            # 1) forza il tipo datetime (accetta mixed/strings/NaT)
+            s = pd.to_datetime(df2[col], errors="coerce")
+
+            # 2) se è timezone-aware, converti a Europe/Rome e rimuovi tz
+            try:
+                if s.dt.tz is not None:
+                    s = s.dt.tz_convert("Europe/Rome").dt.tz_localize(None)
+            except AttributeError:
+                # s.dt non disponibile se tutta la colonna è NaT → ok
+                pass
+
+            df2[col] = s
+
+    # 3) salva in formato stringa uniforme
+    for col in ["inizio_iso", "fine_iso"]:
+        if col in df2.columns:
             df2[col] = df2[col].dt.strftime("%Y-%m-%d %H:%M:%S")
+
     df2.to_csv(ORDERS_CSV, index=False)
+
 
 def next_work_start(dt: datetime) -> datetime:
     """Riposiziona dt all'inizio del prossimo slot lavorativo (oggi 08:00 se possibile, altrimenti prossimo giorno utile)."""
@@ -136,6 +157,13 @@ def save_uploaded_files(order_id: int, uploaded_files):
         with open(target, "wb") as out:
             out.write(f.getbuffer())
 
+
+def combine_date_time(d: date, t: time, tzinfo) -> datetime:
+    return datetime(d.year, d.month, d.day, t.hour, t.minute, t.second)  # niente tz
+
+
+
+
 # =============== STATE INIT ===============
 ensure_storage()
 if "view" not in st.session_state:
@@ -144,33 +172,36 @@ if "selected_id" not in st.session_state:
     st.session_state.selected_id = None
 
 # =============== SIDEBAR ===============
+
+# =============== SIDEBAR ===============
 st.sidebar.title("📁 Ordini")
 
 df = load_orders().sort_values("inizio_iso", ascending=False)
 
-# quick selector
-options = ["➕ Aggiungi nuovo…"]
-labels = ["➕ Aggiungi nuovo…"]
-id_map = [None]
+# Opzioni della sidebar: "new" per aggiunta
+options = ["new"] + [str(int(x)) for x in df["id"]] if not df.empty else ["new"]
+labels = ["➕ Aggiungi nuovo…"] + [
+    f"#{int(row.id)} — {row.titolo} | {row.ore_stimate}h • fine: {human(row.fine_iso)}"
+    for _, row in df.iterrows()
+]
 
-for _, row in df.iterrows():
-    lbl = f"#{int(row['id'])} — {row['titolo']} | {row['ore_stimate']}h • fine: {human(row['fine_iso'])}"
-    options.append(int(row["id"]))
-    labels.append(lbl)
-    id_map.append(int(row["id"]))
+selected_str = st.sidebar.radio("Seleziona", options=options, format_func=lambda v: labels[options.index(v)])
 
-selected = st.sidebar.radio("Seleziona", options=options, format_func=lambda v: labels[options.index(v)])
-if selected is None:
+if selected_str == "new":
     st.session_state.view = "aggiungi"
+    st.session_state.selected_id = None
 else:
     st.session_state.view = "ordini"
-    st.session_state.selected_id = selected
+    st.session_state.selected_id = int(selected_str)
 
 # filtro/ricerca veloce (facoltativo)
 with st.sidebar.expander("🔎 Filtra"):
     q = st.text_input("Cerca per titolo/cliente...")
     if q:
-        df = df[(df["titolo"].str.contains(q, case=False, na=False)) | (df["cliente"].str.contains(q, case=False, na=False))]
+        df = df[
+            (df["titolo"].str.contains(q, case=False, na=False))
+            | (df["cliente"].str.contains(q, case=False, na=False))
+        ]
 
 # =============== MAIN ===============
 st.title("Gestionale Ordini")
@@ -185,18 +216,21 @@ if st.session_state.view == "aggiungi":
             materiale = st.selectbox("Materiale*", options=list(MATERIAL_COEFF.keys()))
         with col2:
             ml = st.number_input("Metri lineari*", min_value=0.0, step=0.5)
-            inizio = st.datetime_input("Data/ora inizio lavori*", value=datetime.now(TZ))
+            d_inizio = st.date_input("Data inizio lavori*", value=date.today())
+            t_inizio = st.time_input("Ora inizio lavori*", value=time(8, 0))
             note = st.text_area("Note", placeholder="Annotazioni interne...")
 
         files = st.file_uploader("Allega file (opzionale)", accept_multiple_files=True)
 
+        # >>>>>>  IMPORTANTISSIMO: pulsante di submit dentro il form  <<<<<<
         submitted = st.form_submit_button("Crea ordine", use_container_width=True)
+
         if submitted:
             if not titolo or not cliente or ml <= 0:
                 st.error("Compila i campi obbligatori e inserisci metri lineari > 0.")
             else:
+                start_dt = combine_date_time(d_inizio, t_inizio, TZ)
                 ore, coeff = compute_estimate(materiale, ml)
-                start_dt = inizio.replace(tzinfo=TZ) if inizio.tzinfo is None else inizio.astimezone(TZ)
                 end_dt = add_work_hours(start_dt, ore)
 
                 df_all = load_orders()
@@ -217,7 +251,6 @@ if st.session_state.view == "aggiungi":
                 df_all = pd.concat([df_all, pd.DataFrame([new_row])], ignore_index=True)
                 save_orders(df_all)
 
-                # salva allegati
                 save_uploaded_files(new_id, files)
 
                 st.success(f"Ordine #{new_id} creato. Fine prevista: {human(end_dt)}")
