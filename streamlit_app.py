@@ -449,56 +449,91 @@ if page == "Aggiungi ordine":
 else:
     # ======== DASHBOARD ========
     st.title("Gestionale Ordini")
-    st.subheader("📅 Calendario scadenze")
+    st.subheader("📅 Calendario scadenze (stile pallini)")
 
     if df_all.empty:
         st.info("Nessun ordine presente. Vai su 'Aggiungi ordine' per crearne uno.")
     else:
         today = datetime.now(TZ)
-        cal = df_all.copy()
 
-        # Se manca scadenza, usa fine prevista come fallback (così tutto è visibile)
+        # Prepara le scadenze (se manca scadenza usa fine prevista)
+        cal = df_all.copy()
         cal["scadenza_data"] = pd.to_datetime(cal["scadenza_iso"], errors="coerce")
         fallback = pd.to_datetime(cal["fine_iso"], errors="coerce")
         cal.loc[cal["scadenza_data"].isna(), "scadenza_data"] = fallback
-        cal = cal.dropna(subset=["scadenza_data"])
-
+        cal = cal.dropna(subset=["scadenza_data"]).copy()
+        cal["scadenza_day"] = cal["scadenza_data"].dt.date
         cal["status"] = cal["scadenza_data"].apply(lambda d: due_status_color(d, today))
-        cal["start"] = cal["scadenza_data"].dt.normalize()
-        cal["end"] = cal["start"] + pd.Timedelta(days=1)
-        cal = cal.sort_values("scadenza_data")
 
-        color_map = {"verde": "#2ca02c", "giallo": "#ffbf00", "rosso": "#d62728"}
+        # Mappa giorno -> lista ordini e severità del giorno (rosso > giallo > verde)
+        rank = {"rosso": 3, "giallo": 2, "verde": 1}
+        dot = {"verde": "🟢", "giallo": "🟡", "rosso": "🔴"}
+        day_orders = {}
+        day_status = {}
+        for d, group in cal.groupby("scadenza_day"):
+            day_orders[d] = group.sort_values("scadenza_data")
+            day_status[d] = max(group["status"], key=lambda s: rank.get(s, 0))
 
-        fig = px.timeline(
-            cal,
-            x_start="start",
-            x_end="end",
-            y=cal["titolo"].fillna(""),
-            color="status",
-            color_discrete_map=color_map,
-            hover_data={
-                "status": True,
-                "cliente": True,
-                "materiale": True,
-                "metri_lineari": True,
-                "ore_stimate": True,
-                "inizio_iso": True,
-                "fine_iso": True,
-                "scadenza_iso": True,
-                "start": False,
-                "end": False,
-            },
-        )
-        fig.update_yaxes(autorange="reversed")
-        fig.update_layout(margin=dict(l=10, r=10, t=20, b=20), height=480, legend_title_text="Stato scadenza")
-        st.plotly_chart(fig, use_container_width=True)
+        # Stato selezione giorno
+        if "selected_day" not in st.session_state:
+            st.session_state.selected_day = today.date()
 
-        show = cal[["id", "titolo", "cliente", "scadenza_iso", "fine_iso", "status"]].copy()
-        show.rename(columns={"scadenza_iso": "scadenza", "fine_iso": "fine_prevista"}, inplace=True)
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        # Parametri calendario "a pallini"
+        days_ahead = 30  # quante giornate vuoi vedere
+        days = pd.date_range(today.date(), today.date() + pd.Timedelta(days=days_ahead), freq="D")
+
+        # Header giorni della settimana
+        wk_labels = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
+        st.caption("Legenda: 🟢 > 2 settimane • 🟡 > 4 giorni • 🔴 ≤ 4 giorni/scaduto")
+        # Disegna a righe di 7 (settimane)
+        for wstart in range(0, len(days), 7):
+            cols = st.columns(7)
+            for i, day in enumerate(days[wstart:wstart+7]):
+                d = day.date()
+                s = day_status.get(d, None)
+                the_dot = dot.get(s, "⚪")
+                selected = (d == st.session_state.selected_day)
+
+                with cols[i]:
+                    # etichetta giorno settimana
+                    st.markdown(f"<div style='text-align:center;opacity:0.7'>{wk_labels[i]}</div>", unsafe_allow_html=True)
+
+                    # bottone giorno con pallino
+                    label = f"{the_dot} {d.day:02d}"
+                    if st.button(label, key=f"day_{d.isoformat()}", use_container_width=True):
+                        st.session_state.selected_day = d
+                        st.rerun()
+
+                    # bordo/marker del selezionato
+                    if selected:
+                        st.markdown("<div style='text-align:center'>⬆️</div>", unsafe_allow_html=True)
+                    else:
+                        st.markdown("<div style='height:1.2em'></div>", unsafe_allow_html=True)
+
+        st.markdown("### 📌 Ordini del " + st.session_state.selected_day.strftime("%d/%m/%Y"))
+
+        todays = day_orders.get(st.session_state.selected_day, pd.DataFrame())
+        if todays is None or len(todays) == 0:
+            st.info("Nessun ordine con scadenza in questa data.")
+        else:
+            # tabella rapida + bottoni per aprire il dettaglio
+            show = todays[["id", "titolo", "cliente", "scadenza_iso", "fine_iso", "status"]].copy()
+            show.rename(columns={"scadenza_iso": "scadenza", "fine_iso": "fine_prevista"}, inplace=True)
+            st.dataframe(show, use_container_width=True, hide_index=True)
+
+            # bottoni per scegliere l'ordine da aprire nel dettaglio
+            cols = st.columns(min(4, len(todays)))
+            for idx, (_, rowx) in enumerate(todays.iterrows()):
+                c = cols[idx % len(cols)]
+                with c:
+                    btxt = f"{dot.get(rowx['status'],'⚪')} #{int(rowx['id'])} — {rowx['titolo']}"
+                    if st.button(btxt, key=f"pick_{int(rowx['id'])}", use_container_width=True):
+                        st.session_state.selected_id = int(rowx["id"])
+                        st.experimental_set_query_params(selected_id=int(rowx["id"]))  # opzionale, per deep-link
+                        st.rerun()
 
     st.markdown("---")
+
 
     # Selettore ordine nella sidebar (solo Dashboard)
     st.sidebar.markdown("### Seleziona ordine")
