@@ -456,7 +456,7 @@ else:
     else:
         today = datetime.now(TZ)
 
-        # Prepara le scadenze (se manca scadenza usa fine prevista)
+        # Prepara scadenze (fallback alla fine prevista)
         cal = df_all.copy()
         cal["scadenza_data"] = pd.to_datetime(cal["scadenza_iso"], errors="coerce")
         fallback = pd.to_datetime(cal["fine_iso"], errors="coerce")
@@ -465,71 +465,98 @@ else:
         cal["scadenza_day"] = cal["scadenza_data"].dt.date
         cal["status"] = cal["scadenza_data"].apply(lambda d: due_status_color(d, today))
 
-        # Mappa giorno -> lista ordini e severità del giorno (rosso > giallo > verde)
-        rank = {"rosso": 3, "giallo": 2, "verde": 1}
-        dot = {"verde": "🟢", "giallo": "🟡", "rosso": "🔴"}
-        day_orders = {}
-        day_status = {}
-        for d, group in cal.groupby("scadenza_day"):
-            day_orders[d] = group.sort_values("scadenza_data")
-            day_status[d] = max(group["status"], key=lambda s: rank.get(s, 0))
+        # Giorno -> (status più severo, conteggio, df ordini)
+        severity_rank = {"rosso": 3, "giallo": 2, "verde": 1}
+        day_info = {}  # d -> {"status": str|None, "count": int, "df": DataFrame}
+        for d, g in cal.groupby("scadenza_day"):
+            stt = max(g["status"], key=lambda s: severity_rank.get(s, 0))
+            day_info[d] = {"status": stt, "count": len(g), "df": g.sort_values("scadenza_data")}
 
         # Stato selezione giorno
         if "selected_day" not in st.session_state:
             st.session_state.selected_day = today.date()
 
-        # Parametri calendario "a pallini"
-        days_ahead = 30  # quante giornate vuoi vedere
+        # Range giorni (modifica a piacere)
+        days_ahead = 35
         days = pd.date_range(today.date(), today.date() + pd.Timedelta(days=days_ahead), freq="D")
 
-        # Header giorni della settimana
+        # CSS minimal per estetica "chip"
+        st.markdown("""
+        <style>
+        .daybox{border:1px solid rgba(255,255,255,0.15); border-radius:12px; padding:8px 6px; text-align:center;}
+        .daybox.selected{box-shadow:0 0 0 2px rgba(255,80,80,0.5) inset;}
+        .dot{width:10px; height:10px; border-radius:50%; display:inline-block; margin-bottom:6px;}
+        .dot.gray{background:#7a7a7a;}
+        .dot.green{background:#2ca02c;}
+        .dot.yellow{background:#ffbf00;}
+        .dot.red{background:#d62728;}
+        .wk{opacity:.75; font-size:0.8rem; text-align:center; margin-bottom:6px;}
+        .daynum{font-weight:600; font-variant-numeric:tabular-nums;}
+        .badge{display:inline-block; padding:0 6px; border-radius:999px; font-size:0.75rem;
+                background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); margin-top:6px;}
+        .btnwrap button{width:100%;}
+        </style>
+        """, unsafe_allow_html=True)
+
         wk_labels = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
-        st.caption("Legenda: 🟢 > 2 settimane • 🟡 > 4 giorni • 🔴 ≤ 4 giorni/scaduto")
-        # Disegna a righe di 7 (settimane)
+        st.caption("Legenda: 🟢 > 2 settimane • 🟡 > 4 giorni • 🔴 ≤ 4 giorni/scaduto • ○ nessun ordine")
+
+        # Disegno a settimane (righe da 7)
         for wstart in range(0, len(days), 7):
             cols = st.columns(7)
             for i, day in enumerate(days[wstart:wstart+7]):
                 d = day.date()
-                s = day_status.get(d, None)
-                the_dot = dot.get(s, "⚪")
+                info = day_info.get(d, None)
+                status = info["status"] if info else None
+                count = info["count"] if info else 0
+
+                dot_class = (
+                    "green" if status == "verde" else
+                    "yellow" if status == "giallo" else
+                    "red" if status == "rosso" else
+                    "gray"
+                )
+
                 selected = (d == st.session_state.selected_day)
 
                 with cols[i]:
-                    # etichetta giorno settimana
-                    st.markdown(f"<div style='text-align:center;opacity:0.7'>{wk_labels[i]}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='wk'>{wk_labels[i]}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='daybox {'selected' if selected else ''}'>"
+                                f"<span class='dot {dot_class}'></span><br/>"
+                                f"<div class='btnwrap'>", unsafe_allow_html=True)
 
-                    # bottone giorno con pallino
-                    label = f"{the_dot} {d.day:02d}"
-                    if st.button(label, key=f"day_{d.isoformat()}", use_container_width=True):
+                    # bottone giorno
+                    if st.button(f"{d.day:02d}", key=f"day_{d.isoformat()}"):
                         st.session_state.selected_day = d
                         st.rerun()
 
-                    # bordo/marker del selezionato
-                    if selected:
-                        st.markdown("<div style='text-align:center'>⬆️</div>", unsafe_allow_html=True)
-                    else:
-                        st.markdown("<div style='height:1.2em'></div>", unsafe_allow_html=True)
+                    st.markdown(f"</div>", unsafe_allow_html=True)
 
+                    # badge conteggio ordini (solo se >0)
+                    if count > 0:
+                        st.markdown(f"<span class='badge'>{count} ord.</span>", unsafe_allow_html=True)
+
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+        # Lista ordini del giorno selezionato
         st.markdown("### 📌 Ordini del " + st.session_state.selected_day.strftime("%d/%m/%Y"))
-
-        todays = day_orders.get(st.session_state.selected_day, pd.DataFrame())
+        todays = day_info.get(st.session_state.selected_day, {}).get("df", pd.DataFrame())
         if todays is None or len(todays) == 0:
             st.info("Nessun ordine con scadenza in questa data.")
         else:
-            # tabella rapida + bottoni per aprire il dettaglio
             show = todays[["id", "titolo", "cliente", "scadenza_iso", "fine_iso", "status"]].copy()
             show.rename(columns={"scadenza_iso": "scadenza", "fine_iso": "fine_prevista"}, inplace=True)
             st.dataframe(show, use_container_width=True, hide_index=True)
 
-            # bottoni per scegliere l'ordine da aprire nel dettaglio
+            # bottoni rapidi per aprire il dettaglio
             cols = st.columns(min(4, len(todays)))
             for idx, (_, rowx) in enumerate(todays.iterrows()):
                 c = cols[idx % len(cols)]
                 with c:
-                    btxt = f"{dot.get(rowx['status'],'⚪')} #{int(rowx['id'])} — {rowx['titolo']}"
+                    icon = "🟢" if rowx["status"]=="verde" else "🟡" if rowx["status"]=="giallo" else "🔴"
+                    btxt = f"{icon} #{int(rowx['id'])} — {rowx['titolo']}"
                     if st.button(btxt, key=f"pick_{int(rowx['id'])}", use_container_width=True):
                         st.session_state.selected_id = int(rowx["id"])
-                        st.experimental_set_query_params(selected_id=int(rowx["id"]))  # opzionale, per deep-link
                         st.rerun()
 
     st.markdown("---")
