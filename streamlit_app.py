@@ -522,25 +522,20 @@ else:
             """, unsafe_allow_html=True)
 
             # RIGA DI CHIP (solo giorni con scadenze)
-            chip_cols = st.columns(2) if st.experimental_get_query_params() else [st.container()]  # fallback: una riga
+            chip_cols = st.columns(2) if st.query_params() else [st.container()]  # fallback: una riga
             # Per semplicità, facciamo tutti i chip nel container principale:
             chip_area = st.container()
             with chip_area:
+                # --- RIGA DI CHIP (solo giorni con scadenze) — versione pulita: SOLO bottoni ---
                 for d in page_days:
                     info = day_info[d]
                     stt = info["status"]
-                    dot_class = "green" if stt=="verde" else "yellow" if stt=="giallo" else "red"
-                    label = f"{d.strftime('%a %d/%m')}"
-                    # chip visual
-                    st.markdown(
-                        f"<span class='chip'><span class='dot {dot_class}'></span>"
-                        f"<span>{label}</span><span class='badge'>({info['count']})</span></span>",
-                        unsafe_allow_html=True
-                    )
-                    # bottone invisibile “sovrapposto” (cliccabile) con chiave distinta
-                    if st.button(label, key=f"chipbtn_{d.isoformat()}"):
+                    icon = "🟢" if stt == "verde" else "🟡" if stt == "giallo" else "🔴"
+                    label = f"{icon} {d.strftime('%a %d/%m')}  ({info['count']})"
+                    if st.button(label, key=f"chip_{d.isoformat()}", use_container_width=True):
                         st.session_state.selected_day = d
                         st.rerun()
+
 
             # Lista ordini del giorno selezionato (se la selezione non è nella pagina corrente, mostro cmq)
             if "selected_day" not in st.session_state:
@@ -566,7 +561,7 @@ else:
                         if st.button(f"{icon} Apri #{oid}", key=f"open_{oid}", use_container_width=True):
                             st.session_state.selected_id = oid
                             st.session_state["order_selector"] = str(oid)  # sync radio
-                            st.experimental_set_query_params(selected_id=oid)  # opzionale deep link
+                            st.query_params = {**st.query_params, "selected_id": str(oid)}  # opzionale deep link
                             st.rerun()
 
     st.markdown("---")
