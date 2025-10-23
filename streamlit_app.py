@@ -151,23 +151,22 @@ def load_orders() -> pd.DataFrame:
         empty["completato"] = empty.get("completato", pd.Series(dtype="boolean"))
         return empty
 
-    # tipi
+    # --- Tipi numerici ---
     if "id" in df.columns:
         df["id"] = pd.to_numeric(df["id"], errors="coerce").astype("Int64")
     for c in ["metri_lineari", "coeff", "ore_stimate"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # date
+    # --- Date: dayfirst=True per formati italiani tipo 31/12/2025 14:00 ---
     for col in ["inizio_iso", "fine_iso", "scadenza_iso"]:
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
+            df[col] = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
 
-    # 👇 normalizza 'completato' a boolean
+    # --- Colonna 'completato' ---
     if "completato" not in df.columns:
         df["completato"] = False
     else:
-        # accetta True/False, 1/0, "TRUE"/"FALSE", "si"/"no"
         df["completato"] = (
             df["completato"]
             .astype(str)
@@ -176,28 +175,30 @@ def load_orders() -> pd.DataFrame:
             .isin(["true", "1", "si", "sì", "y", "yes"])
         )
 
-    # garantisci tutte le colonne e ordine
+    # --- Completa colonne mancanti ---
     for c in COLUMNS:
         if c not in df.columns:
             df[c] = pd.NA
-    # assicura dtype boolean "pandas nullable" per evitare warning
-    df["completato"] = df["completato"].astype("boolean")
 
+    df["completato"] = df["completato"].astype("boolean")
     return df[COLUMNS]
+
+DATE_FMT_SHEET = "%d/%m/%Y %H:%M"  # IT, senza secondi
 
 def save_orders(df: pd.DataFrame):
     df2 = df.copy()
 
-    # formatta date come stringhe
+    # Date -> stringhe in formato italiano senza secondi
     for col in ["inizio_iso", "fine_iso", "scadenza_iso"]:
         if col in df2.columns:
-            s = pd.to_datetime(df2[col], errors="coerce")
-            df2[col] = s.dt.strftime("%Y-%m-%d %H:%M:%S")
+            s = pd.to_datetime(df2[col], errors="coerce", dayfirst=True)
+            df2[col] = s.dt.strftime(DATE_FMT_SHEET)
 
-    # booleani come TRUE/FALSE (comodo anche su Google Sheets)
+    # Booleani
     if "completato" in df2.columns:
         df2["completato"] = df2["completato"].map(lambda v: bool(v) if pd.notna(v) else False)
 
+    # Colonne / ordine
     for c in COLUMNS:
         if c not in df2.columns:
             df2[c] = pd.NA
@@ -271,7 +272,7 @@ def human(dtobj) -> str:
             return "-"
     except Exception:
         return "-"
-    return pd.to_datetime(dtobj).strftime("%d/%m/%Y %H:%M")
+    return pd.to_datetime(dtobj, dayfirst=True).strftime("%d/%m/%Y %H:%M")
 
 def due_status_color(scadenza: pd.Timestamp, today: datetime) -> str:
     """
@@ -358,7 +359,7 @@ if page == "Impostazioni":
 
         def recalc_row(row):
             try:
-                start_dt = pd.to_datetime(row["inizio_iso"])
+                start_dt = pd.to_datetime(row["inizio_iso"], errors="coerce", dayfirst=True)
                 materiale = str(row["materiale"]).lower()
                 coeff_map = load_coeffs_from_sheet()
                 coeff = coeff_map.get(materiale, MATERIAL_COEFF_DEFAULT.get(materiale, 0.20))
@@ -373,6 +374,7 @@ if page == "Impostazioni":
             except:
                 pass
             return row
+
 
         df = df.apply(recalc_row, axis=1)
         save_orders(df)
@@ -472,14 +474,18 @@ else:
         if not show_done:
             cal = cal[~cal["completato"].fillna(False)]
 
-        cal["scadenza_data"] = pd.to_datetime(cal["scadenza_iso"], errors="coerce")
-        fallback = pd.to_datetime(cal["fine_iso"], errors="coerce")
+        cal = df_all.copy()
+        if not show_done:
+            cal = cal[~cal["completato"].fillna(False)]
+
+        # Le colonne sono già datetime grazie a load_orders(); evita ri-parse
+        cal["scadenza_data"] = cal["scadenza_iso"].copy()
+        fallback = cal["fine_iso"].copy()
         cal.loc[cal["scadenza_data"].isna(), "scadenza_data"] = fallback
         cal = cal.dropna(subset=["scadenza_data"]).copy()
 
-        # Solo giorno (date) e status colore
-        cal["scadenza_day"] = cal["scadenza_data"].dt.date
-        cal["status"] = cal["scadenza_data"].apply(lambda d: due_status_color(d, today))
+        cal["scadenza_day"] = pd.to_datetime(cal["scadenza_data"]).dt.date
+        cal["status"] = cal["scadenza_data"].apply(lambda d: due_status_color(pd.to_datetime(d), today))
 
         # Filtro passato
         if not show_past:
@@ -672,10 +678,7 @@ else:
                     st.rerun()
 
                 if st.button("Ricalcola fine (regole attuali)", use_container_width=True):
-                    try:
-                        start_dt = pd.to_datetime(r["inizio_iso"]).to_pydatetime().replace(tzinfo=TZ)
-                    except Exception:
-                        start_dt = pd.to_datetime(r["inizio_iso"]).to_pydatetime()
+                    start_dt = pd.to_datetime(r["inizio_iso"], errors="coerce", dayfirst=True)
                     ore = float(r["ore_stimate"] or 0)
                     new_end = add_work_hours(start_dt, ore)
                     odf.loc[odf["id"] == r["id"], "fine_iso"] = new_end
@@ -683,17 +686,21 @@ else:
                     st.success(f"Fine aggiornata: {human(new_end)}")
                     st.rerun()
 
+
                 with st.form(f"edit_deadline_{int(r['id'])}"):
                     st.write("Aggiorna scadenza")
-                    current_scad = pd.to_datetime(r["scadenza_iso"], errors="coerce")
-                    d_scad = st.date_input("Data scadenza", value=(current_scad.date() if pd.notna(current_scad) else date.today()))
-                    t_scad = st.time_input("Ora scadenza", value=(current_scad.time() if pd.notna(current_scad) else time(18, 0)))
+                    current_scad = pd.to_datetime(r["scadenza_iso"], errors="coerce", dayfirst=True)
+                    d_scad = st.date_input("Data scadenza",
+                                        value=(current_scad.date() if pd.notna(current_scad) else date.today()))
+                    t_scad = st.time_input("Ora scadenza",
+                                        value=(current_scad.time() if pd.notna(current_scad) else time(18, 0)))
                     if st.form_submit_button("Salva scadenza", use_container_width=True):
                         scad_dt = combine_date_time(d_scad, t_scad, TZ)
                         odf.loc[odf["id"] == r["id"], "scadenza_iso"] = scad_dt
                         save_orders(odf)
                         st.success(f"Scadenza aggiornata: {human(scad_dt)}")
                         st.rerun()
+
 
             st.markdown("#### 📎 Allegati")
             files = list_files(int(r["id"]))
