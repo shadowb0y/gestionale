@@ -12,8 +12,7 @@ from google.oauth2.service_account import Credentials
 from gspread_dataframe import get_as_dataframe, set_with_dataframe
 
 # === Timeline calendario ===
-import plotly.express as px
-
+import plotly.express as px  # (rimane importato se in futuro ti serve)
 
 # ==============================
 # CONFIG
@@ -28,10 +27,11 @@ FILES_DIR = os.path.join(DATA_DIR, "files")
 SHEET_NAME = "streamlit-gestionale"             # nome del file su Google Drive
 WORKSHEET_TITLE = None                          # None = primo foglio
 
+# 👇 AGGIUNTA: colonna 'completato'
 COLUMNS = [
     "id", "titolo", "cliente", "materiale", "metri_lineari",
     "coeff", "ore_stimate", "inizio_iso", "fine_iso",
-    "scadenza_iso", "note"
+    "scadenza_iso", "note", "completato"
 ]
 
 # Giorni/ore lavorative
@@ -47,7 +47,6 @@ MATERIAL_COEFF_DEFAULT = {
     "ceramica": 0.12,
 }
 
-
 # ==============================
 # STORAGE (allegati)
 # ==============================
@@ -55,12 +54,10 @@ def ensure_storage():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(FILES_DIR, exist_ok=True)
 
-
 def order_dir(order_id: int) -> str:
     path = os.path.join(FILES_DIR, str(order_id))
     os.makedirs(path, exist_ok=True)
     return path
-
 
 def list_files(order_id: int):
     d = order_dir(order_id)
@@ -71,7 +68,6 @@ def list_files(order_id: int):
             files.append(full)
     return files
 
-
 def save_uploaded_files(order_id: int, uploaded_files):
     if not uploaded_files:
         return
@@ -80,7 +76,6 @@ def save_uploaded_files(order_id: int, uploaded_files):
         target = os.path.join(d, f.name)
         with open(target, "wb") as out:
             out.write(f.getbuffer())
-
 
 # ==============================
 # GOOGLE SHEETS HELPERS
@@ -93,7 +88,6 @@ def _load_service_info():
         import json
         return json.loads(os.environ["GCP_SERVICE_ACCOUNT_JSON"])
 
-
 def _open_spreadsheet():
     info = _load_service_info()
     scopes = [
@@ -104,11 +98,9 @@ def _open_spreadsheet():
     gc = gspread.authorize(creds)
     return gc.open(SHEET_NAME)
 
-
 def _open_ws():
     sh = _open_spreadsheet()
     return sh.get_worksheet(0) if WORKSHEET_TITLE is None else sh.worksheet(WORKSHEET_TITLE)
-
 
 def _get_or_create_config_ws():
     sh = _open_spreadsheet()
@@ -121,7 +113,6 @@ def _get_or_create_config_ws():
         if rows:
             ws.update(f"A2:B{len(rows)+1}", rows)
         return ws
-
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_coeffs_from_sheet() -> dict:
@@ -141,7 +132,6 @@ def load_coeffs_from_sheet() -> dict:
         coeffs = MATERIAL_COEFF_DEFAULT.copy()
     return coeffs
 
-
 def save_coeffs_to_sheet(coeffs: dict):
     """Salva i coefficienti nel worksheet 'config' e invalida la cache."""
     ws = _get_or_create_config_ws()
@@ -152,12 +142,14 @@ def save_coeffs_to_sheet(coeffs: dict):
         ws.update(f"A2:B{len(rows)+1}", rows)
     load_coeffs_from_sheet.clear()  # invalida cache
 
-
 def load_orders() -> pd.DataFrame:
     ws = _open_ws()
     df = get_as_dataframe(ws, evaluate_formulas=True, header=0).dropna(how="all")
     if df.empty:
-        return pd.DataFrame(columns=COLUMNS)
+        # crea df vuoto con tutte le colonne, inclusa 'completato'
+        empty = pd.DataFrame(columns=COLUMNS)
+        empty["completato"] = empty.get("completato", pd.Series(dtype="boolean"))
+        return empty
 
     # tipi
     if "id" in df.columns:
@@ -171,19 +163,40 @@ def load_orders() -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
 
+    # 👇 normalizza 'completato' a boolean
+    if "completato" not in df.columns:
+        df["completato"] = False
+    else:
+        # accetta True/False, 1/0, "TRUE"/"FALSE", "si"/"no"
+        df["completato"] = (
+            df["completato"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .isin(["true", "1", "si", "sì", "y", "yes"])
+        )
+
     # garantisci tutte le colonne e ordine
     for c in COLUMNS:
         if c not in df.columns:
             df[c] = pd.NA
-    return df[COLUMNS]
+    # assicura dtype boolean "pandas nullable" per evitare warning
+    df["completato"] = df["completato"].astype("boolean")
 
+    return df[COLUMNS]
 
 def save_orders(df: pd.DataFrame):
     df2 = df.copy()
+
+    # formatta date come stringhe
     for col in ["inizio_iso", "fine_iso", "scadenza_iso"]:
         if col in df2.columns:
             s = pd.to_datetime(df2[col], errors="coerce")
             df2[col] = s.dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    # booleani come TRUE/FALSE (comodo anche su Google Sheets)
+    if "completato" in df2.columns:
+        df2["completato"] = df2["completato"].map(lambda v: bool(v) if pd.notna(v) else False)
 
     for c in COLUMNS:
         if c not in df2.columns:
@@ -193,7 +206,6 @@ def save_orders(df: pd.DataFrame):
     ws = _open_ws()
     ws.clear()
     set_with_dataframe(ws, df2, include_index=False, include_column_header=True, resize=True)
-
 
 # ==============================
 # BUSINESS UTILS
@@ -214,7 +226,6 @@ def next_work_start(dt: datetime) -> datetime:
             nd += timedelta(days=1)
         return nd.replace(hour=WORK_START_HOUR, minute=0, second=0, microsecond=0)
     return dt_local
-
 
 def add_work_hours(start: datetime, hours: float) -> datetime:
     remaining = float(hours or 0)
@@ -241,7 +252,6 @@ def add_work_hours(start: datetime, hours: float) -> datetime:
 
     return current
 
-
 def compute_estimate(materiale: str, ml: float) -> tuple[float, float]:
     """Usa sempre i coefficienti correnti dal worksheet 'config'."""
     coeffs = load_coeffs_from_sheet()
@@ -252,10 +262,8 @@ def compute_estimate(materiale: str, ml: float) -> tuple[float, float]:
     ore = round(coeff * float(ml or 0), 2)
     return ore, coeff
 
-
 def combine_date_time(d: date, t: time, tzinfo) -> datetime:
     return datetime(d.year, d.month, d.day, t.hour, t.minute, t.second)
-
 
 def human(dtobj) -> str:
     try:
@@ -264,7 +272,6 @@ def human(dtobj) -> str:
     except Exception:
         return "-"
     return pd.to_datetime(dtobj).strftime("%d/%m/%Y %H:%M")
-
 
 def due_status_color(scadenza: pd.Timestamp, today: datetime) -> str:
     """
@@ -281,7 +288,6 @@ def due_status_color(scadenza: pd.Timestamp, today: datetime) -> str:
         return "giallo"
     return "rosso"
 
-
 # ==============================
 # STATE INIT
 # ==============================
@@ -289,13 +295,11 @@ ensure_storage()
 if "selected_id" not in st.session_state:
     st.session_state.selected_id = None
 
-
 # ==============================
 # SIDEBAR (menu pagine)
 # ==============================
 st.sidebar.title("📁 Navigazione")
 page = st.sidebar.selectbox("Pagina", ["Dashboard", "Aggiungi ordine", "Impostazioni"])
-
 
 # ==============================
 # PAGINA: IMPOSTAZIONI
@@ -377,7 +381,6 @@ if page == "Impostazioni":
 
     st.stop()  # evita che si disegni altro
 
-
 # ==============================
 # PAGINE: DASHBOARD / AGGIUNGI
 # ==============================
@@ -435,6 +438,7 @@ if page == "Aggiungi ordine":
                     "fine_iso": end_dt,
                     "scadenza_iso": scadenza_dt,
                     "note": note,
+                    "completato": False,  # 👈 parte aperto
                 }
 
                 df_now = pd.concat([df_now, pd.DataFrame([new_row])], ignore_index=True)
@@ -443,13 +447,11 @@ if page == "Aggiungi ordine":
 
                 st.success(f"Ordine #{new_id} creato. Fine prevista: {human(end_dt)} • Scadenza: {human(scadenza_dt)}")
                 st.session_state.selected_id = new_id
-                st.switch_page  # no-op in Cloud; restiamo qui
                 st.rerun()
 
 else:
     # ======== DASHBOARD ========
     st.title("Gestionale Ordini")
-    # ------------------- CALENDARIO COMPATTO: solo giorni con scadenze -------------------
     st.subheader("📅 Scadenze (solo giorni con ordini)")
 
     if df_all.empty:
@@ -457,8 +459,19 @@ else:
     else:
         today = datetime.now(TZ)
 
+        # Filtri globali dashboard
+        colflt1, colflt2 = st.columns(2)
+        with colflt1:
+            show_past = st.toggle("Mostra anche scadenze passate", value=False)
+        with colflt2:
+            show_done = st.toggle("Mostra anche ordini eseguiti", value=False)
+
         # Prepara scadenze (fallback alla fine prevista)
         cal = df_all.copy()
+        # escludi eseguiti di default
+        if not show_done:
+            cal = cal[~cal["completato"].fillna(False)]
+
         cal["scadenza_data"] = pd.to_datetime(cal["scadenza_iso"], errors="coerce")
         fallback = pd.to_datetime(cal["fine_iso"], errors="coerce")
         cal.loc[cal["scadenza_data"].isna(), "scadenza_data"] = fallback
@@ -468,13 +481,12 @@ else:
         cal["scadenza_day"] = cal["scadenza_data"].dt.date
         cal["status"] = cal["scadenza_data"].apply(lambda d: due_status_color(d, today))
 
-        # FILTRO: di default mostra solo da oggi in avanti (togglabile)
-        show_past = st.toggle("Mostra anche scadenze passate", value=False)
+        # Filtro passato
         if not show_past:
             cal = cal[cal["scadenza_day"] >= today.date()]
 
         if cal.empty:
-            st.info("Non ci sono scadenze nel periodo selezionato.")
+            st.info("Non ci sono scadenze nel periodo/selezione.")
         else:
             # Aggrega per giorno: status più severo + conteggio + df ordini
             rank = {"rosso": 3, "giallo": 2, "verde": 1}
@@ -521,11 +533,9 @@ else:
             </style>
             """, unsafe_allow_html=True)
 
-            # RIGA DI CHIP (solo giorni con scadenze)
+            # RIGA DI CHIP (solo giorni con scadenze) — bottoni
             chip_area = st.container()
-
             with chip_area:
-                # --- RIGA DI CHIP (solo giorni con scadenze) — versione pulita: SOLO bottoni ---
                 for d in page_days:
                     info = day_info[d]
                     stt = info["status"]
@@ -536,46 +546,56 @@ else:
                         "Mon": "Lunedì", "Tue": "Martedì", "Wed": "Mercoledì",
                         "Thu": "Giovedì", "Fri": "Venerdì", "Sat": "Sabato", "Sun": "Domenica"
                     }
-                    giorno = giorni.get(d.strftime("%a"), d.strftime("%a"))
+                    giorno = giorni.get(pd.Timestamp(d).strftime("%a"), pd.Timestamp(d).strftime("%a"))
 
-                    # Gestione singolare/plurale
                     n = info["count"]
                     ordini_txt = "ordine" if n == 1 else "ordini"
+                    label = f"{icon} {giorno} {pd.Timestamp(d).strftime('%d/%m')} — {n} {ordini_txt}"
 
-                    # Label finale leggibile
-                    label = f"{icon} {giorno} {d.strftime('%d/%m')} — {n} {ordini_txt}"
-
-                    if st.button(label, key=f"chip_{d.isoformat()}", use_container_width=True):
+                    if st.button(label, key=f"chip_{pd.Timestamp(d).date().isoformat()}", use_container_width=True):
                         st.session_state.selected_day = d
                         st.rerun()
 
-
-
-            # Lista ordini del giorno selezionato (se la selezione non è nella pagina corrente, mostro cmq)
+            # Lista ordini del giorno selezionato
             if "selected_day" not in st.session_state:
                 st.session_state.selected_day = page_days[0]
 
-            st.markdown(f"### 📌 Ordini del {st.session_state.selected_day.strftime('%d/%m/%Y')}")
+            st.markdown(f"### 📌 Ordini del {pd.Timestamp(st.session_state.selected_day).strftime('%d/%m/%Y')}")
             todays = day_info.get(st.session_state.selected_day, {}).get("df", pd.DataFrame())
 
             if todays is None or todays.empty:
                 st.info("Nessun ordine in questa data.")
             else:
-                show = todays[["id", "titolo", "cliente", "scadenza_iso", "fine_iso", "status"]].copy()
+                # Mostra una vista con badge ✅
+                show = todays[["id", "titolo", "cliente", "scadenza_iso", "fine_iso", "status", "completato"]].copy()
                 show.rename(columns={"scadenza_iso": "scadenza", "fine_iso": "fine_prevista"}, inplace=True)
-                st.dataframe(show, use_container_width=True, hide_index=True)
+                show["titolo"] = show.apply(
+                    lambda r: (("✅ " if bool(r["completato"]) else "") + str(r["titolo"])), axis=1
+                )
+                st.dataframe(show.drop(columns=["status"]), use_container_width=True, hide_index=True)
 
-                # bottoni rapidi: apri dettaglio e sincronizza sidebar
+                # Azioni rapide per ogni ordine del giorno
                 cols_open = st.columns(min(4, len(todays)))
                 for idx, (_, rowx) in enumerate(todays.iterrows()):
                     c = cols_open[idx % len(cols_open)]
                     with c:
                         icon = "🟢" if rowx["status"]=="verde" else "🟡" if rowx["status"]=="giallo" else "🔴"
                         oid = int(rowx["id"])
-                        if st.button(f"{icon} Apri #{oid}", key=f"open_{oid}", use_container_width=True):
+                        b1 = st.button(f"{icon} Apri #{oid}", key=f"open_{oid}", use_container_width=True)
+                        # Toggle completato / riattiva
+                        done = bool(rowx.get("completato", False))
+                        action_label = ("↩︎ Riattiva" if done else "✅ Completa") + f" #{oid}"
+                        b2 = st.button(action_label, key=f"toggle_done_{oid}", use_container_width=True)
+                        if b1:
                             st.session_state.selected_id = oid
                             st.session_state["order_selector"] = str(oid)  # sync radio
-                            st.query_params = {**st.query_params, "selected_id": str(oid)}  # opzionale deep link
+                            st.query_params = {**st.query_params, "selected_id": str(oid)}
+                            st.rerun()
+                        if b2:
+                            odf2 = load_orders()
+                            odf2.loc[odf2["id"] == oid, "completato"] = (not done)
+                            save_orders(odf2)
+                            st.success(f"Ordine #{oid} {'riattivato' if done else 'completato'}.")
                             st.rerun()
 
     st.markdown("---")
@@ -589,10 +609,11 @@ else:
         st.session_state.selected_id = None
     else:
         options = [str(int(x)) for x in df_all["id"].dropna().astype(int)]
-        labels = [
-            f"#{int(row.id)} — {row.titolo} | {row.ore_stimate}h • fine: {human(row.fine_iso)}"
-            for _, row in df_all.iterrows()
-        ]
+        def label_for_row(row):
+            base = f"#{int(row.id)} — {row.titolo} | {row.ore_stimate}h • fine: {human(row.fine_iso)}"
+            return ("✅ " + base) if bool(row.get("completato", False)) else base
+
+        labels = [label_for_row(row) for _, row in df_all.iterrows()]
 
         # inizializza selected_id se mancante
         if st.session_state.get("selected_id") is None and options:
@@ -602,10 +623,6 @@ else:
         if str(st.session_state.selected_id) not in options and options:
             st.session_state.selected_id = int(options[0])
 
-        # forza l'indice del radio a seguire selected_id
-        default_index = options.index(str(st.session_state.selected_id)) if options else 0
-
-        # === Sidebar radio sincronizzato senza warning ===
         # Inizializza il valore di default una sola volta
         if "order_selector" not in st.session_state:
             st.session_state.order_selector = str(st.session_state.selected_id)
@@ -632,19 +649,28 @@ else:
             r = row.iloc[0]
             c1, c2 = st.columns([2, 1])
             with c1:
-                st.markdown(f"### #{int(r['id'])} — {r['titolo']}")
+                badge = " ✅" if bool(r.get("completato", False)) else ""
+                st.markdown(f"### #{int(r['id'])} — {r['titolo']}{badge}")
                 st.write(f"**Cliente:** {r['cliente']}")
                 st.write(f"**Materiale:** {r['materiale']}  |  **ML:** {r['metri_lineari']}")
                 st.write(f"**Ore stimate:** {r['ore_stimate']} (coeff: {r['coeff']} h/ml)")
                 st.write(f"**Inizio lavori:** {human(r['inizio_iso'])}")
                 st.write(f"**Fine prevista:** {human(r['fine_iso'])}")
                 st.write(f"**Scadenza:** {human(r['scadenza_iso'])}")
-                if isinstance(r.get("note", ""), str) and r["note"].strip():
+                if isinstance(r.get("note", ""), str) and str(r["note"]).strip():
                     st.write("**Note:**")
                     st.write(r["note"])
 
             with c2:
                 st.write("**Azioni**")
+                # 👇 switch completato
+                done_now = st.toggle("Segna come completato", value=bool(r.get("completato", False)))
+                if done_now != bool(r.get("completato", False)):
+                    odf.loc[odf["id"] == r["id"], "completato"] = done_now
+                    save_orders(odf)
+                    st.success(f"Ordine #{int(r['id'])} {'completato' if done_now else 'riattivato'}.")
+                    st.rerun()
+
                 if st.button("Ricalcola fine (regole attuali)", use_container_width=True):
                     try:
                         start_dt = pd.to_datetime(r["inizio_iso"]).to_pydatetime().replace(tzinfo=TZ)
